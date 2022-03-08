@@ -1,6 +1,10 @@
 from math import cos,  sin, radians
-from matplotlib.widgets import Button, RadioButtons
+from matplotlib.widgets import Button, RadioButtons, CheckButtons
 import matplotlib.pyplot as plt
+
+import matplotlib.image as mpimg
+
+path_to_img = "/tmp/backim.png"
 
 class GempyInteract:
 
@@ -9,20 +13,36 @@ class GempyInteract:
     angle_of_rotation = radians(5)
     scalar_index = 0
     mode = "add"
+    formation_to_add = None
+    show_topography = False
+    show_scalar = False
+    show_lith = False
+    show_img = False
+    image_shown = None
+    images = []
 
-    def __init__(self, gp, geo_model, model_extension, model_resolution):
+    def __init__(self, gp, geo_model, p3d=None, surfaces_for_3d=None,
+            images=None):
         self.gp = gp
         self.geo_model = geo_model
+        model_resolution = geo_model.grid.regular_grid.resolution
+        model_extension = geo_model.grid.regular_grid.extent
         self.x_min, self.x_max, self.y_min, self.y_max, self.z_min, self.z_max = model_extension
         self.x_res, self.y_res, self.z_res = model_resolution
         self.dx = (self.x_max - self.x_min) / self.x_res
         self.dy = (self.y_max - self.y_min) / self.y_res
         self.dz = (self.z_max - self.z_min) / self.z_res
+        self.p3d = p3d
+        self.surfaces_for_3d = surfaces_for_3d
         self.initial_plot()
         self.connect_events()
         self.create_colors()
         self.add_buttons()
         self.plot()
+        if images:
+            for image_path, extent, direction, origin_coordinate in images:
+                image = mpimg.imread(image_path)
+                self.images.append((image, extent, direction, origin_coordinate))
 
     def add_buttons(self):
         fig = self.axis.get_figure()
@@ -32,6 +52,7 @@ class GempyInteract:
         self.ax_surfaces = fig.add_axes([0.47, 0.05, 0.1, 0.125])
         self.ax_directions = fig.add_axes([0.33, 0.05, 0.1, 0.125])
         self.ax_delete = fig.add_axes([0.20, 0.05, 0.1, 0.125])
+        self.ax_settings = fig.add_axes([0.00, 0.05, 0.1, 0.125])
         self.next_button = Button(self.ax_next, 'Next')
         self.next_button.on_clicked(self.next_section)
         self.prev_button = Button(self.ax_prev, 'Prev')
@@ -44,11 +65,24 @@ class GempyInteract:
         self.direction_rbtn = RadioButtons(self.ax_directions, ('x','y','z'))
         self.direction_rbtn.on_clicked(self.direction_changed)
         self.direction_changed('x')
+        self.settings_button = CheckButtons(self.ax_settings,('show_topography', 'show_scalar', 'show_lith', 'show_img'))
+        self.settings_button.on_clicked(self.settings_changed)
 
         surfaces = self.geo_model._surfaces.df.surface.to_list()[:-1]
         self.surfaces_rbtn = RadioButtons(self.ax_surfaces, surfaces)
         self.surfaces_rbtn.on_clicked(self.surface_changed)
         self.surface_changed(surfaces[0])
+
+    def settings_changed(self, label):
+        if label == 'show_topography':
+            self.show_topography = not self.show_topography
+        if label == 'show_scalar':
+            self.show_scalar = not self.show_scalar
+        if label == 'show_lith':
+            self.show_lith = not self.show_lith
+        if label == 'show_img':
+            self.show_img = not self.show_img
+        self.plot()
 
     def delete_point(self, event):
         self.mode = "delete"
@@ -84,6 +118,14 @@ class GempyInteract:
     def initial_plot(self):
         self.p2d = self.gp.plot_2d(self.geo_model, n_axis=3, section_names=None, direction=None, cell_number=None)
         self.axis = self.p2d.add_section(cell_number=self.cell_number, direction=self.direction, show_topography=False)
+
+        if self.p3d:
+            def update_func(normal, origin):
+                pass
+
+            self.p3d.p.clear_plane_widgets()
+            self.plane_widget = self.p3d.p.add_plane_widget(update_func, test_callback=False, normal_rotation=False)
+
         plt.ion()
 
     def switch_section(self, where):
@@ -96,9 +138,12 @@ class GempyInteract:
         if self.direction=='x':
             if self.cell_number > self.x_res-1:
                 self.cell_number = self.x_res-1
-        else:
+        elif self.direction=="y":
             if self.cell_number > self.y_res-1:
                 self.cell_number = self.y_res-1
+        elif self.direction=="z":
+            if self.cell_number > self.z_res-1:
+                self.cell_number = self.z_res-1
         self.plot()
 
     def onkey_release(self, event):
@@ -256,10 +301,14 @@ class GempyInteract:
         geo_model = self.geo_model
         p2d.remove(ax)
 
-        #p2d.plot_lith(ax, cell_number=cell_number, direction=direction)
-        p2d.plot_contacts(ax, cell_number=cell_number, direction=direction)
-        p2d.plot_scalar_field(ax, direction=direction, cell_number=cell_number, series_n=self.scalar_index)
-        # p2d.plot_data(ax, direction=direction, legend=True)
+        if self.show_lith:
+            p2d.plot_lith(ax, cell_number=cell_number, direction=direction)
+        try:
+            p2d.plot_contacts(ax, cell_number=cell_number, direction=direction)
+        except ValueError:
+            pass
+        if self.show_scalar:
+            p2d.plot_scalar_field(ax, direction=direction, cell_number=cell_number, series_n=self.scalar_index)
         if direction=='x':
             x = self.x_min + cell_number * self.dx
             mask = abs(geo_model._surface_points.df.X - x) < .5*self.dx
@@ -272,6 +321,7 @@ class GempyInteract:
             orientations_plot_dx = orientations.G_y.to_list()
             orientations_plot_y = orientations.Z.to_list()
             orientations_plot_dy = orientations.G_z.to_list()
+            self.axis.set_title(f"x: {x}, cell_number: {cell_number}")
         elif direction=="y":
             y = self.y_min + cell_number * self.dy
             mask = abs(geo_model._surface_points.df.Y - y) < .5*self.dy
@@ -284,6 +334,7 @@ class GempyInteract:
             orientations_plot_dx = orientations.G_x.to_list()
             orientations_plot_y = orientations.Z.to_list()
             orientations_plot_dy = orientations.G_z.to_list()
+            self.axis.set_title(f"y: {y}, cell_number: {cell_number}")
         elif direction=="z":
             z = self.z_min + cell_number * self.dz
             mask = abs(geo_model._surface_points.df.Z - z) < .5*self.dz
@@ -296,17 +347,70 @@ class GempyInteract:
             orientations_plot_y = orientations.Y.to_list()
             orientations_plot_dx = orientations.G_x.to_list()
             orientations_plot_dy = orientations.G_y.to_list()
+            self.axis.set_title(f"z: {z}, cell_number: {cell_number}")
 
+        # if self.formation_to_add:
+        #     orientations = orientations[orientations.surface == self.formation_to_add]
         points_surfaces = points.surface.to_list()
         orientations_surfaces = orientations.surface.to_list()
 
         points_colors = [self.colors[surface] for surface in points_surfaces]
         orientations_colors = [self.colors[surface] for surface in orientations_surfaces]
 
+        if self.show_topography:
+            self.p2d.plot_topography(ax, cell_number=cell_number, direction=direction)
         ax.scatter(points_plot_x, points_plot_y, c=points_colors, zorder=103)
         ax.quiver(orientations_plot_x, orientations_plot_y, orientations_plot_dx, orientations_plot_dy, color=orientations_colors, zorder=103)
 
         self.axis.get_figure().canvas.draw()
+
+
+        if self.p3d:
+            px, py, pz = self.plane_widget.GetOrigin()
+            if direction == "x":
+                pnormal = (1.0, 0.0, 0.0)
+                px = x
+            elif direction == "y":
+                pnormal = (0.0, 1.0, 0.0)
+                py = y
+            elif direction == "z":
+                pnormal = (0.0, 0.0, 1.0)
+                pz = z
+            self.plane_widget.SetNormal(pnormal)
+            self.plane_widget.SetOrigin(px, py, pz)
+
+            if self.surfaces_for_3d:
+                self.p3d.plot_surfaces(self.surfaces_for_3d, opacity=0.4)
+
+        if self.image_shown:
+            self.image_shown.remove()
+            self.image_shown = None
+        if self.show_img:
+            if direction == 'x':
+                self.plot_image(direction, x)
+            if direction == 'y':
+                self.plot_image(direction, y)
+            if direction == 'z':
+                self.plot_image(direction, z)
+
+    def plot_image(self, direction_, coordinate):
+        for image, extent, direction, origin_coordinate in self.images:
+            if direction != direction_:
+                continue
+            d_coord = abs(coordinate - origin_coordinate)
+            if direction == "x":
+                if d_coord > self.dx:
+                    continue
+            if direction == "y":
+                if d_coord > self.dy:
+                    continue
+            if direction == "z":
+                if d_coord > self.dz:
+                    continue
+
+            self.image_shown = self.axis.imshow(image, origin='upper', alpha=.8, extent = extent)
+            # print(i)
+            # print(dir(i))
 
     def add_point_at_coord(self, x, y, z, formation):
         self.geo_model.add_surface_points(X=x, Y=y, Z=z, surface=formation)
